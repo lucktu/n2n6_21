@@ -176,7 +176,8 @@ struct n2n_REGISTER_SUPER_ACK
     n2n_sock_t          sn_bak;         /* Socket of the first backup supernode */
     char                version[16];    /* supernode version string */
     char                os_name[16];    /* supernode OS name */
-
+    uint8_t             sn_ipv4_support;  /* 0=not supported, 1=supported */
+    uint8_t             sn_ipv6_support;  /* 0=not supported, 1=supported */
 };
 
 typedef struct n2n_REGISTER_SUPER_ACK n2n_REGISTER_SUPER_ACK_t;

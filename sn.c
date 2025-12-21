@@ -11,7 +11,18 @@
 #include "n2n.h"
 #include "n2n_transforms.h"
 #include "n2n_wire.h"
-#include <string.h>
+#include <fcntl.h>
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#define SOCKET_INVALID INVALID_SOCKET
+#define CLOSE_SOCKET(s) closesocket(s)
+#else
+#include <sys/select.h>
+#include <arpa/inet.h>
+#define SOCKET_INVALID -1
+#define CLOSE_SOCKET(s) close(s)
+#endif
 
 #define N2N_SN_LPORT_DEFAULT SUPERNODE_PORT
 #define N2N_SN_MGMT_PORT     5646
@@ -53,6 +64,8 @@ struct n2n_sn
     SOCKET              mgmt_sock;      /* management socket. */
     struct peer_info *  edges;          /* Link list of registered edges. */
     n2n_trans_op_t      transop[N2N_MAX_TRANSFORMS];
+    int                 ipv4_available; /* 0=unavailable, 1=available */
+    int                 ipv6_available; /* 0=unavailable, 1=available */
 };
 
 typedef struct n2n_sn n2n_sn_t;
@@ -71,6 +84,163 @@ static int try_broadcast( n2n_sn_t * sss,
                           size_t pktsize );
 
 
+/* IPv4 connectivity test */
+static int test_ipv4_connectivity() {
+#ifdef _WIN32
+    SOCKET sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock == INVALID_SOCKET) return 0;
+
+    u_long mode = 1; /* 1 = non-blocking */
+    ioctlsocket(sock, FIONBIO, &mode);
+
+    struct sockaddr_in test_addr;
+    memset(&test_addr, 0, sizeof(test_addr));
+    test_addr.sin_family = AF_INET;
+    test_addr.sin_port = htons(53);
+    inet_pton(AF_INET, "8.8.8.8", &test_addr.sin_addr);
+
+    int connect_result = connect(sock, (struct sockaddr*)&test_addr, sizeof(test_addr));
+
+    if (connect_result == 0) {
+        closesocket(sock);
+        return 1;
+    }
+
+    if (WSAGetLastError() != WSAEWOULDBLOCK) {
+        closesocket(sock);
+        return 0;
+    }
+#else
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) return 0;
+
+    fcntl(sock, F_SETFL, O_NONBLOCK);
+
+    struct sockaddr_in test_addr;
+    memset(&test_addr, 0, sizeof(test_addr));
+    test_addr.sin_family = AF_INET;
+    test_addr.sin_port = htons(53);
+    inet_pton(AF_INET, "8.8.8.8", &test_addr.sin_addr);
+
+    int connect_result = connect(sock, (struct sockaddr*)&test_addr, sizeof(test_addr));
+
+    if (connect_result == 0) {
+        close(sock);
+        return 1;
+    }
+
+    if (errno != EINPROGRESS) {
+        close(sock);
+        return 0;
+    }
+#endif
+
+    fd_set write_fds;
+    struct timeval timeout = {1, 0};
+    FD_ZERO(&write_fds);
+    FD_SET(sock, &write_fds);
+
+    int result = select(sock + 1, NULL, &write_fds, NULL, &timeout);
+
+    if (result > 0) {
+        int error = 0;
+        socklen_t len = sizeof(error);
+#ifdef _WIN32
+        getsockopt(sock, SOL_SOCKET, SO_ERROR, (char*)&error, &len);
+        closesocket(sock);
+#else
+        getsockopt(sock, SOL_SOCKET, SO_ERROR, &error, &len);
+        close(sock);
+#endif
+        return (error == 0);
+    }
+
+#ifdef _WIN32
+    closesocket(sock);
+#else
+    close(sock);
+#endif
+    return 0;
+}
+
+/* IPv6 connectivity test */
+static int test_ipv6_connectivity() {
+#ifdef _WIN32
+    SOCKET sock = socket(AF_INET6, SOCK_DGRAM, 0);
+    if (sock == INVALID_SOCKET) return 0;
+
+    u_long mode = 1; /* 1 = non-blocking */
+    ioctlsocket(sock, FIONBIO, &mode);
+
+    struct sockaddr_in6 test_addr;
+    memset(&test_addr, 0, sizeof(test_addr));
+    test_addr.sin6_family = AF_INET6;
+    test_addr.sin6_port = htons(53);
+    inet_pton(AF_INET6, "2001:4860:4860::8888", &test_addr.sin6_addr);
+
+    int connect_result = connect(sock, (struct sockaddr*)&test_addr, sizeof(test_addr));
+
+    if (connect_result == 0) {
+        closesocket(sock);
+        return 1;
+    }
+
+    if (WSAGetLastError() != WSAEWOULDBLOCK) {
+        closesocket(sock);
+        return 0;
+    }
+#else
+    int sock = socket(AF_INET6, SOCK_DGRAM, 0);
+    if (sock < 0) return 0;
+
+    fcntl(sock, F_SETFL, O_NONBLOCK);
+
+    struct sockaddr_in6 test_addr;
+    memset(&test_addr, 0, sizeof(test_addr));
+    test_addr.sin6_family = AF_INET6;
+    test_addr.sin6_port = htons(53);
+    inet_pton(AF_INET6, "2001:4860:4860::8888", &test_addr.sin6_addr);
+
+    int connect_result = connect(sock, (struct sockaddr*)&test_addr, sizeof(test_addr));
+
+    if (connect_result == 0) {
+        close(sock);
+        return 1;
+    }
+
+    if (errno != EINPROGRESS) {
+        close(sock);
+        return 0;
+    }
+#endif
+
+    fd_set write_fds;
+    struct timeval timeout = {1, 0};
+    FD_ZERO(&write_fds);
+    FD_SET(sock, &write_fds);
+
+    int result = select(sock + 1, NULL, &write_fds, NULL, &timeout);
+
+    if (result > 0) {
+        int error = 0;
+        socklen_t len = sizeof(error);
+#ifdef _WIN32
+        getsockopt(sock, SOL_SOCKET, SO_ERROR, (char*)&error, &len);
+        closesocket(sock);
+#else
+        getsockopt(sock, SOL_SOCKET, SO_ERROR, &error, &len);
+        close(sock);
+#endif
+        return (error == 0);
+    }
+
+#ifdef _WIN32
+    closesocket(sock);
+#else
+    close(sock);
+#endif
+    return 0;
+}
 
 /** Initialise the supernode structure */
 static int init_sn( n2n_sn_t * sss )
@@ -459,6 +629,20 @@ static int process_mgmt( n2n_sn_t * sss,
                        (unsigned int) sss->stats.fwd,
                        (long unsigned int)(now - sss->stats.last_fwd));
 
+    const char* ip_support;
+    if (sss->ipv4_available && sss->ipv6_available) {
+        ip_support = "IPv4+IPv6 (dual-stack)";
+    } else if (sss->ipv4_available) {
+        ip_support = "IPv4 only";
+    } else if (sss->ipv6_available) {
+        ip_support = "IPv6 only";
+    } else {
+        ip_support = "None";
+    }
+
+    ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
+                       "ip_support: %s\n", ip_support);
+
     r = sendto(sss->mgmt_sock, resbuf, ressize, 0,
               sender_sock, sender_sock_len);
     if (r <= 0) return -1;
@@ -776,6 +960,10 @@ static int process_udp( n2n_sn_t * sss,
         strncpy(ack.version, n2n_sw_version, sizeof(ack.version) - 1);
         strncpy(ack.os_name, n2n_sw_osName, sizeof(ack.os_name) - 1);
 
+        /* Set IP support capability flags */
+        ack.sn_ipv4_support = (sss->ipv4_available ? 1 : 0);
+        ack.sn_ipv6_support = (sss->ipv6_available ? 1 : 0);
+
         encode_REGISTER_SUPER_ACK( ackbuf, &encx, &cmn2, &ack );
 
 		      /* Select the correct socket based on the address family */
@@ -923,41 +1111,60 @@ int main( int argc, char * const argv[] )
 
     traceEvent( TRACE_DEBUG, "traceLevel is %d", traceLevel);
 
+    int ipv4_available = 0, ipv6_available = 0;
+
     if (ipv4) {
         sss.sock = open_socket(sss.lport, 1 /*bind ANY*/ );
-        if ( -1 == sss.sock )
-        {
-#ifdef _WIN32
-            W32_ERROR(WSAGetLastError(), error);
-            traceEvent( TRACE_ERROR, "Failed to open main IPv4 socket. %ls", error );
-            W32_ERROR_FREE(error);
-#else
-            traceEvent( TRACE_ERROR, "Failed to open main IPv4 socket. %s", strerror(errno) );
-#endif
-            exit(-2);
-        }
-        else
-        {
-            traceEvent( TRACE_NORMAL, "supernode is listening on UDP4 %u (main)", sss.lport );
+        if (sss.sock != -1) {
+            ipv4_available = 1;
+        } else {
+            traceEvent( TRACE_WARNING, "IPv4 socket failed, continuing without IPv4" );
+            sss.sock = -1;
         }
     }
+
     if (ipv6) {
         sss.sock6 = open_socket6(sss.lport, 1 /*bind ANY*/ );
-        if ( -1 == sss.sock6 )
-        {
-#ifdef _WIN32
-            W32_ERROR(WSAGetLastError(), error);
-            traceEvent( TRACE_ERROR, "Failed to open main IPv6 socket. %ls", error );
-            W32_ERROR_FREE(error);
-#else
-            traceEvent( TRACE_ERROR, "Failed to open main IPv6 socket. %s", strerror(errno) );
-#endif
-            exit(-2);
+        if (sss.sock6 != -1) {
+            ipv6_available = 1;
+        } else {
+            traceEvent( TRACE_WARNING, "IPv6 socket failed, continuing without IPv6" );
+            sss.sock6 = -1;
         }
-        else
-        {
-            traceEvent( TRACE_NORMAL, "supernode is listening on UDP6 %u (main)", sss.lport );
-        }
+    }
+
+    /* Verify actual connectivity */
+    if (ipv4_available && test_ipv4_connectivity()) {
+        traceEvent( TRACE_NORMAL, "IPv4 connectivity confirmed" );
+    } else if (ipv4_available) {
+        traceEvent( TRACE_WARNING, "IPv4 socket available but no external connectivity" );
+        ipv4_available = 0;
+    }
+
+    if (ipv6_available && test_ipv6_connectivity()) {
+        traceEvent( TRACE_NORMAL, "IPv6 connectivity confirmed" );
+    } else if (ipv6_available) {
+        traceEvent( TRACE_WARNING, "IPv6 socket available but no external connectivity" );
+        ipv6_available = 0;
+    }
+
+    /* At least one socket must be available */
+    if (!ipv4_available && !ipv6_available) {
+        traceEvent( TRACE_ERROR, "No IP sockets available, exiting" );
+        exit(-2);
+    }
+
+    /* Set the actual availability fields */
+    sss.ipv4_available = ipv4_available;
+    sss.ipv6_available = ipv6_available;
+
+    /* Display actual running mode */
+    if (ipv4_available && ipv6_available) {
+        traceEvent( TRACE_NORMAL, "Supernode running in dual-stack mode (IPv4+IPv6)" );
+    } else if (ipv4_available) {
+        traceEvent( TRACE_NORMAL, "Supernode running in IPv4 only mode" );
+    } else if (ipv6_available) {
+        traceEvent( TRACE_NORMAL, "Supernode running in IPv6 only mode" );
     }
 
 #ifndef _WIN32

@@ -398,6 +398,8 @@ size_t encode_REGISTER_SUPER_ACK( uint8_t * base,
     }
     retval += encode_buf( base, idx, reg->version, 16 );
     retval += encode_buf( base, idx, reg->os_name, 16 );
+    retval += encode_uint8( base, idx, reg->sn_ipv4_support );
+    retval += encode_uint8( base, idx, reg->sn_ipv6_support );
 
     return retval;
 }
@@ -427,6 +429,8 @@ size_t decode_REGISTER_SUPER_ACK( n2n_REGISTER_SUPER_ACK_t * reg,
     }
     retval += decode_buf( reg->version, 16, base, rem, idx );
     retval += decode_buf( reg->os_name, 16, base, rem, idx );
+    retval += decode_uint8( &(reg->sn_ipv4_support), base, rem, idx );
+    retval += decode_uint8( &(reg->sn_ipv6_support), base, rem, idx );
 
     return retval;
 }

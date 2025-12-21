@@ -140,6 +140,8 @@ struct n2n_edge
     time_t              last_sup;               /**< Last time a packet arrived from supernode. */
     size_t              sup_attempts;           /**< Number of remaining attempts to this supernode. */
     n2n_cookie_t        last_cookie;            /**< Cookie sent in last REGISTER_SUPER. */
+    uint8_t             sn_ipv4_support;        /**< Supernode IPv4 support capability */
+    uint8_t             sn_ipv6_support;        /**< Supernode IPv6 support capability */
 
     time_t              start_time;             /**< For calculating uptime */
 
@@ -1792,10 +1794,20 @@ static void readFromMgmtSocket(n2n_edge_t *eee, int *keep_running) {
     }
 
     /* Send supernode info */
-    const char* ip_version = "IPv4";
-    if (eee->supernode.family == AF_INET6) {
-        ip_version = "IPv6";
+    const char* conn_type = (eee->supernode.family == AF_INET6) ? "IPv6" : "IPv4";
+
+    /* Determine supernode IP support description */
+    char sn_support[32];
+    if (eee->sn_ipv4_support && eee->sn_ipv6_support) {
+        snprintf(sn_support, sizeof(sn_support), "IPv4+IPv6");
+    } else if (eee->sn_ipv4_support) {
+        snprintf(sn_support, sizeof(sn_support), "IPv4 only");
+    } else if (eee->sn_ipv6_support) {
+        snprintf(sn_support, sizeof(sn_support), "IPv6 only");
+    } else {
+        snprintf(sn_support, sizeof(sn_support), "None");
     }
+
     msg_len = snprintf((char*)udp_buf, N2N_PKT_BUF_SIZE, "Supernodes\n");
     sendto(eee->mgmt_sock, udp_buf, msg_len, 0/*flags*/,
            (struct sockaddr*) &sender_sock, i);
@@ -1803,7 +1815,7 @@ static void readFromMgmtSocket(n2n_edge_t *eee, int *keep_running) {
                        "  l* |  %s | v%s | %s\n",
                        sock_to_cstr(sockaddr, &eee->supernode),
                        eee->supernode_version,
-                       ip_version);
+                       sn_support);
     sendto(eee->mgmt_sock, udp_buf, msg_len, 0/*flags*/,
            (struct sockaddr*) &sender_sock, i);
 
@@ -2033,6 +2045,10 @@ static void readFromIPSocket( n2n_edge_t * eee )
                     } else {
                         strcpy(eee->supernode_version, "unknown");
                     }
+
+                    /* Store supernode IP support capabilities */
+                    eee->sn_ipv4_support = ra.sn_ipv4_support;
+                    eee->sn_ipv6_support = ra.sn_ipv6_support;
                 }
                 else
                 {
